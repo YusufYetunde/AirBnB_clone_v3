@@ -1,106 +1,84 @@
 #!/usr/bin/python3
 '''Contains the places_amenities view for the API.'''
-from flask import jsonify, request
+from flask import jsonify, request, make_response, abort
 from werkzeug.exceptions import NotFound, MethodNotAllowed
 
 from api.v1.views import app_views
-from models import storage, storage_t
-from models.amenity import Amenity
+from models import storage
+from models.review import Review
 from models.place import Place
+from model.user import User
 
 
-@app_views.route('/places/<place_id>/amenities', methods=['GET'])
-@app_views.route(
-    '/places/<place_id>/amenities/<amenity_id>',
-    methods=['DELETE', 'POST']
-)
-def handle_places_amenities(place_id=None, amenity_id=None):
-    '''The method handler for the places endpoint.
-    '''
-    handlers = {
-        'GET': get_place_amenities,
-        'DELETE': remove_place_amenity,
-        'POST': add_place_amenity
-    }
-    if request.method in handlers:
-        return handlers[request.method](place_id, amenity_id)
-    else:
-        raise MethodNotAllowed(list(handlers.keys()))
+@app_views.route('/places/<place_id>/reviews', methods=['GET'], strict_slashes=False)
+@app_views.route('/reviews/<review_id>', methods=['GET'], strict_slashes=False)
+@app_views.route('/reviews/<review_id>',
+                 methods=['DELETE'], strict_slashes=False)
+@app_views.route('/places/<place_id>/reviews',
+                 methods=['POST'], strict_slashes=False)
+@app_views.route('/reviews/<review_id>',
+                 methods=['PUT'], strict_slashes=False)
+def review(place_id):
+    """Retrieves the list of all Review objects of a Place"""
+    obj_place = storage.get(Place, place_id)
+    if not obj_place:
+        abort(404)
+    return jsonify([obj.to_dict() for obj in obj_place.reviews])
 
 
-def get_place_amenities(place_id=None, amenity_id=None):
-    '''Gets the amenities of a place with the given id.
-    '''
-    if place_id:
-        place = storage.get(Place, place_id)
-        if place:
-            all_amenities = list(map(lambda x: x.to_dict(), place.amenities))
-            return jsonify(all_amenities)
-    raise NotFound()
+def single_review(review_id):
+    """Retrieves a Review object"""
+    obj = storage.get(Review, review_id)
+    if not obj:
+        abort(404)
+    return jsonify(obj.to_dict())
 
+def del_review(review_id):
+    """Returns an empty dictionary with the status code 200"""
+    obj = storage.get(Review, review_id)
+    if not obj:
+        abort(404)
+    obj.delete()
+    storage.save()
+    return make_response(jsonify({}), 200)
 
-def remove_place_amenity(place_id=None, amenity_id=None):
-    '''Removes an amenity with a given id from a place with a given id.
-    '''
-    if place_id and amenity_id:
-        place = storage.get(Place, place_id)
-        if not place:
-            raise NotFound()
-        amenity = storage.get(Amenity, amenity_id)
-        if not amenity:
-            raise NotFound()
-        place_amenity_link = list(
-            filter(lambda x: x.id == amenity_id, place.amenities)
-        )
-        if not place_amenity_link:
-            raise NotFound()
-        if storage_t == 'db':
-            amenity_place_link = list(
-                filter(lambda x: x.id == place_id, amenity.place_amenities)
-            )
-            if not amenity_place_link:
-                raise NotFound()
-            place.amenities.remove(amenity)
-            place.save()
-            return jsonify({}), 200
-        else:
-            amenity_idx = place.amenity_ids.index(amenity_id)
-            place.amenity_ids.pop(amenity_idx)
-            place.save()
-            return jsonify({}), 200
-    raise NotFound()
+def push_review(place_id):
+    """Returns the new Review with the status code 201"""
+    obj_place = storage.get(Place, place_id)
+    if not obj_place:
+        abort(404)
 
+    new_review = request.get_json()
+    if not new_review:
+        abort(400, "Not a JSON")
+    if 'user_id' not in new_review:
+        abort(400, "Missing user_id")
+    user_id = new_review['user_id']
+    obj_user = storage.get(User, user_id)
+    if not obj_user:
+        abort(404)
+    if 'text' not in new_review:
+        abort(400, "Missing text")
 
-def add_place_amenity(place_id=None, amenity_id=None):
-    '''Adds an amenity with a given id to a place with a given id.
-    '''
-    if place_id and amenity_id:
-        place = storage.get(Place, place_id)
-        if not place:
-            raise NotFound()
-        amenity = storage.get(Amenity, amenity_id)
-        if not amenity:
-            raise NotFound()
-        if storage_t == 'db':
-            place_amenity_link = list(
-                filter(lambda x: x.id == amenity_id, place.amenities)
-            )
-            amenity_place_link = list(
-                filter(lambda x: x.id == place_id, amenity.place_amenities)
-            )
-            if amenity_place_link and place_amenity_link:
-                res = amenity.to_dict()
-                del res['place_amenities']
-                return jsonify(res), 200
-            place.amenities.append(amenity)
-            place.save()
-            res = amenity.to_dict()
-            del res['place_amenities']
-            return jsonify(res), 201
-        else:
-            if amenity_id in place.amenity_ids:
-                return jsonify(amenity.to_dict()), 200
-            place.amenity_ids.push(amenity_id)
-            place.save()
-            return jsonify(amenity.to_dict()), 201
-    raise NotFound()
+    obj = Review(**new_review)
+    setattr(obj, 'place_id', place_id)
+    storage.new(obj)
+    storage.save()
+    return make_response(jsonify(obj.to_dict()), 201)
+
+def put_review(review_id):
+    """Returns the Review object with the status code 200"""
+    obj = storage.get(Review, review_id)
+    if not obj:
+        abort(404)
+
+    req = request.get_json()
+    if not req:
+        abort(400, "Not a JSON")
+
+    for k, v in req.items():
+        if k not in ['id', 'user_id', 'place_id', 'created_at', 'updated_at']:
+            setattr(obj, k, v)
+
+    storage.save()
+    return make_response(jsonify(obj.to_dict()), 200)
